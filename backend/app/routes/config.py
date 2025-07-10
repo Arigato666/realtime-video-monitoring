@@ -1,19 +1,19 @@
 from flask import Blueprint, request, jsonify
 import numpy as np
-
 from app.services import system_state
 from app.services.danger_zone import (
     DANGER_ZONE, SAFETY_DISTANCE, LOITERING_THRESHOLD,
     save_danger_zone_config
 )
+from app.utils import logger  # 添加日志记录器
 
-# 创建配置蓝图
-config_bp = Blueprint('config', __name__, url_prefix='/api')
+# 创建配置蓝图 - 更新为使用新的蓝图命名约定
+bp = Blueprint('config', __name__, url_prefix='/api/config')
 
 # 危险区域编辑模式标志
 edit_mode = False
 
-@config_bp.route("/config", methods=["GET"])
+@bp.route("/", methods=["GET"])
 def get_config():
     """获取配置信息端点
     ---
@@ -39,13 +39,23 @@ def get_config():
               type: number
               description: 停留时间警报阈值.
     """
+    # 添加日志记录
+    logger.info("获取系统配置信息")
+    
+    try:
+        # 将numpy数组转换为列表
+        danger_zone_list = DANGER_ZONE.tolist()
+    except AttributeError:
+        # 如果DANGER_ZONE已经是列表
+        danger_zone_list = DANGER_ZONE
+        
     return jsonify({
-        "danger_zone": DANGER_ZONE.tolist(),
+        "danger_zone": danger_zone_list,
         "safety_distance": SAFETY_DISTANCE,
         "loitering_threshold": LOITERING_THRESHOLD
     })
 
-@config_bp.route("/update_danger_zone", methods=["POST"])
+@bp.route("/danger_zone", methods=["POST"])
 def update_danger_zone():
     """更新危险区域坐标端点
     ---
@@ -75,17 +85,41 @@ def update_danger_zone():
     data = request.json
     new_zone = data.get('danger_zone')
     
+    # 添加日志记录
+    logger.info(f"更新危险区域配置: {new_zone}")
+    
     if new_zone and len(new_zone) >= 3:  # 确保至少有3个点形成多边形
-        DANGER_ZONE = np.array(new_zone, np.int32)
-        # 保存到配置文件
-        if save_danger_zone_config(DANGER_ZONE, SAFETY_DISTANCE, LOITERING_THRESHOLD):
-            return jsonify({"status": "success", "message": "Danger zone updated and saved successfully"})
-        else:
-            return jsonify({"status": "warning", "message": "Danger zone updated but failed to save to file"})
+        try:
+            # 转换为numpy数组
+            DANGER_ZONE = np.array(new_zone, np.int32)
+            
+            # 保存到配置文件
+            if save_danger_zone_config(DANGER_ZONE, SAFETY_DISTANCE, LOITERING_THRESHOLD):
+                return jsonify({
+                    "status": "success", 
+                    "message": "危险区域更新并保存成功",
+                    "danger_zone": DANGER_ZONE.tolist()
+                })
+            else:
+                return jsonify({
+                    "status": "warning", 
+                    "message": "危险区域更新但保存到文件失败",
+                    "danger_zone": DANGER_ZONE.tolist()
+                })
+        except Exception as e:
+            logger.error(f"更新危险区域时出错: {str(e)}")
+            return jsonify({
+                "status": "error", 
+                "message": f"处理危险区域时出错: {str(e)}"
+            }), 500
     else:
-        return jsonify({"status": "error", "message": "Invalid danger zone coordinates"}), 400
+        logger.warning("无效的危险区域坐标数据")
+        return jsonify({
+            "status": "error", 
+            "message": "无效的危险区域坐标数据，至少需要3个点"
+        }), 400
 
-@config_bp.route("/update_thresholds", methods=["POST"])
+@bp.route("/thresholds", methods=["POST"])
 def update_thresholds():
     """更新安全距离和停留时间阈值端点
     ---
@@ -113,38 +147,62 @@ def update_thresholds():
     global SAFETY_DISTANCE, LOITERING_THRESHOLD
     data = request.json
     
+    # 添加日志记录
+    logger.info(f"更新阈值配置: {data}")
+    
     safety_distance = data.get('safety_distance')
     loitering_threshold = data.get('loitering_threshold')
+    
+    updated = False
     
     if safety_distance is not None:
         try:
             SAFETY_DISTANCE = int(safety_distance)
+            updated = True
         except ValueError:
-            return jsonify({"status": "error", "message": "Invalid safety distance value"}), 400
+            logger.error("安全距离值无效")
+            return jsonify({
+                "status": "error", 
+                "message": "安全距离值无效"
+            }), 400
             
     if loitering_threshold is not None:
         try:
             LOITERING_THRESHOLD = float(loitering_threshold)
+            updated = True
         except ValueError:
-            return jsonify({"status": "error", "message": "Invalid loitering threshold value"}), 400
+            logger.error("停留时间阈值无效")
+            return jsonify({
+                "status": "error", 
+                "message": "停留时间阈值无效"
+            }), 400
     
-    # 保存到配置文件
-    if save_danger_zone_config(DANGER_ZONE, SAFETY_DISTANCE, LOITERING_THRESHOLD):
-        return jsonify({
-            "status": "success", 
-            "message": "Thresholds updated and saved successfully",
-            "safety_distance": SAFETY_DISTANCE,
-            "loitering_threshold": LOITERING_THRESHOLD
-        })
+    if updated:
+        # 保存到配置文件
+        try:
+            save_danger_zone_config(DANGER_ZONE, SAFETY_DISTANCE, LOITERING_THRESHOLD)
+            return jsonify({
+                "status": "success", 
+                "message": "阈值更新并保存成功",
+                "safety_distance": SAFETY_DISTANCE,
+                "loitering_threshold": LOITERING_THRESHOLD
+            })
+        except Exception as e:
+            logger.error(f"保存阈值配置时出错: {str(e)}")
+            return jsonify({
+                "status": "warning", 
+                "message": "阈值更新但保存到文件失败",
+                "safety_distance": SAFETY_DISTANCE,
+                "loitering_threshold": LOITERING_THRESHOLD
+            })
     else:
+        logger.warning("未提供有效的阈值更新数据")
         return jsonify({
-            "status": "warning", 
-            "message": "Thresholds updated but failed to save to file",
-            "safety_distance": SAFETY_DISTANCE,
-            "loitering_threshold": LOITERING_THRESHOLD
+            "status": "info", 
+            "message": "未提供有效的阈值更新数据"
         })
 
-@config_bp.route("/toggle_edit_mode", methods=["POST"])
+@bp.route("/edit_mode", methods=["POST"])
 def toggle_edit_mode():
     """切换危险区域编辑模式端点
     ---
@@ -177,19 +235,45 @@ def toggle_edit_mode():
     """
     global edit_mode
     data = request.json
-    edit_mode = data.get('edit_mode', False)
-    return jsonify({"status": "success", "edit_mode": edit_mode}) 
+    new_mode = data.get('edit_mode', False)
+    
+    # 添加日志记录
+    logger.info(f"切换编辑模式: {edit_mode} -> {new_mode}")
+    
+    edit_mode = new_mode
+    return jsonify({
+        "status": "success", 
+        "edit_mode": edit_mode
+    })
 
-@config_bp.route("/detection_mode", methods=["GET", "POST"])
+@bp.route("/detection_mode", methods=["GET", "POST"])
 def detection_mode():
     """获取或设置检测模式"""
     if request.method == "POST":
         data = request.json
         mode = data.get('mode')
+        
+        # 添加日志记录
+        logger.info(f"设置检测模式: {mode}")
+        
         if mode in ['object_detection', 'face_only']:
             system_state.DETECTION_MODE = mode
-            print(f"检测模式已切换为: {system_state.DETECTION_MODE}")
-            return jsonify({"status": "success", "message": f"Detection mode set to {mode}"})
-        return jsonify({"status": "error", "message": "Invalid mode"}), 400
-    else:  # GET
-        return jsonify({"mode": system_state.DETECTION_MODE}) 
+            logger.info(f"检测模式已切换为: {system_state.DETECTION_MODE}")
+            return jsonify({
+                "status": "success", 
+                "message": f"检测模式已设置为 {mode}",
+                "detection_mode": mode
+            })
+        
+        logger.error(f"无效的检测模式: {mode}")
+        return jsonify({
+            "status": "error", 
+            "message": "无效的检测模式"
+        }), 400
+    
+    # GET请求
+    logger.info("获取当前检测模式")
+    return jsonify({
+        "status": "success",
+        "detection_mode": system_state.DETECTION_MODE
+    })

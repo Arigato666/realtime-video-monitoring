@@ -1,5 +1,7 @@
 import mysql.connector
 from app.config import Config
+from app import db
+from app.models import User
 
 def init_database():
     """初始化数据库和表结构"""
@@ -183,6 +185,18 @@ def init_database():
         
 
         print("✅ 数据库表创建成功!")
+        # 创建初始管理员用户（如果不存在）
+        if not User.query.filter_by(username='admin').first():
+            admin = User(
+                user_id=str(uuid.uuid4()),
+                username='admin',
+                password=generate_password_hash('admin123'),
+                email='admin@example.com'
+            )
+            db.session.add(admin)
+            db.session.commit()
+            print("✅ 管理员用户创建成功")
+
         return True
         
     except mysql.connector.Error as err:
